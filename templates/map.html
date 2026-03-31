@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SafeRoute Chicago — Results</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Rajdhani:wght@400;500;600;700&family=Exo+2:wght@300;400;600;800&display=swap" rel="stylesheet"/>
+  <style>
+    :root {
+      --bg:       #080d13;
+      --surface:  #0d1620;
+      --surface2: #111c2a;
+      --border:   #1a3044;
+      --accent:   #00e676;
+      --accent2:  #00bcd4;
+      --danger:   #ff3d00;
+      --warning:  #ffab00;
+      --text:     #cdd9e5;
+      --muted:    #546e7a;
+      --glow:     0 0 24px rgba(0,230,118,0.25);
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Exo 2', sans-serif;
+      height: 100vh;
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0;
+      background-image:
+        linear-gradient(rgba(0,230,118,0.02) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,230,118,0.02) 1px, transparent 1px);
+      background-size: 40px 40px;
+      pointer-events: none;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      position: relative; z-index: 10;
+      background: rgba(8,13,19,0.95);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(10px);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 24px; height: 56px; flex-shrink: 0;
+    }
+    .topbar-left { display: flex; align-items: center; gap: 16px; }
+    .back-btn {
+      display: flex; align-items: center; gap: 8px;
+      font-family: 'Space Mono', monospace; font-size: 11px;
+      color: var(--muted); text-decoration: none;
+      padding: 6px 12px;
+      border: 1px solid var(--border); border-radius: 6px;
+      transition: all .2s;
+    }
+    .back-btn:hover { color: var(--accent); border-color: rgba(0,230,118,0.4); }
+    .logo-small {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 16px; font-weight: 700;
+      color: #fff; letter-spacing: 1px;
+    }
+    .logo-small span { color: var(--accent); }
+    .route-path {
+      font-family: 'Space Mono', monospace; font-size: 11px;
+      color: var(--muted); background: var(--surface);
+      padding: 4px 12px; border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+    .route-path strong { color: #fff; }
+    .time-pill {
+      font-family: 'Space Mono', monospace; font-size: 10px;
+      color: var(--accent2);
+      background: rgba(0,188,212,0.08);
+      border: 1px solid rgba(0,188,212,0.25);
+      padding: 4px 12px; border-radius: 20px;
+    }
+
+    /* ── Main layout ── */
+    .main { flex: 1; display: flex; overflow: hidden; position: relative; z-index: 1; }
+
+    /* ── Sidebar ── */
+    .sidebar {
+      width: 300px; background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex; flex-direction: column;
+      overflow-y: auto; flex-shrink: 0;
+    }
+    .sidebar-section { padding: 20px; border-bottom: 1px solid var(--border); }
+    .sidebar-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 13px; font-weight: 700;
+      letter-spacing: 2px; color: var(--muted); margin-bottom: 14px;
+    }
+
+    /* ── Route cards ── */
+    .route-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px; padding: 14px 16px;
+      margin-bottom: 10px; transition: border-color .2s;
+    }
+    .route-card:last-child { margin-bottom: 0; }
+    .route-card.best {
+      border-color: rgba(0,230,118,0.5);
+      background: rgba(0,230,118,0.04);
+    }
+    .route-card-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px;
+    }
+    .route-card-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 15px; font-weight: 700; color: #fff;
+    }
+    .badge {
+      font-family: 'Space Mono', monospace;
+      font-size: 9px; letter-spacing: 1px;
+      padding: 3px 8px; border-radius: 4px;
+    }
+    .badge-safe {
+      background: rgba(0,230,118,0.15); color: var(--accent);
+      border: 1px solid rgba(0,230,118,0.3);
+    }
+    .badge-alt {
+      background: rgba(84,110,122,0.15); color: var(--muted);
+      border: 1px solid rgba(84,110,122,0.3);
+    }
+    .route-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .meta-label { font-size: 9px; letter-spacing: 1px; color: var(--muted); margin-bottom: 2px; }
+    .meta-value { font-family: 'Space Mono', monospace; font-size: 13px; color: #fff; }
+    .meta-value.risk-safe { color: var(--accent); }
+    .meta-value.risk-high { color: var(--danger); }
+    .meta-value.risk-med  { color: var(--warning); }
+
+    .risk-bar-wrap { margin-top: 10px; }
+    .risk-bar-bg { background: #0d1a24; border-radius: 3px; height: 6px; overflow: hidden; }
+    .risk-bar-fill { height: 100%; border-radius: 3px; transition: width .6s ease; }
+
+    /* ── Info rows ── */
+    .info-row {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 10px;
+    }
+    .info-key { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--muted); }
+    .info-val { font-family: 'Space Mono', monospace; font-size: 11px; color: var(--accent2); }
+
+    /* ── Legend ── */
+    .legend-item { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .legend-line { width: 32px; height: 4px; border-radius: 2px; }
+    .legend-text { font-size: 12px; color: var(--text); }
+
+    .heatmap-gradient {
+      height: 12px; border-radius: 4px;
+      background: linear-gradient(90deg, #1a237e, #e65100, #b71c1c, #ff1744);
+      margin-top: 8px;
+    }
+    .heatmap-labels { display: flex; justify-content: space-between; margin-top: 4px; }
+    .heatmap-label { font-family: 'Space Mono', monospace; font-size: 9px; color: var(--muted); }
+
+    /* ── Error ── */
+    .error-panel {
+      flex: 1; display: flex; align-items: center;
+      justify-content: center; flex-direction: column;
+      gap: 20px; padding: 40px; text-align: center;
+    }
+    .error-icon { font-size: 64px; }
+    .error-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 24px; font-weight: 700;
+      color: var(--danger); letter-spacing: 1px;
+    }
+    .error-msg { font-size: 15px; color: var(--muted); max-width: 500px; line-height: 1.6; }
+    .error-btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 12px 28px; background: transparent;
+      border: 1px solid var(--accent); border-radius: 8px;
+      color: var(--accent);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 15px; font-weight: 700; letter-spacing: 2px;
+      text-decoration: none; cursor: pointer; transition: all .2s;
+    }
+    .error-btn:hover { background: rgba(0,230,118,0.1); box-shadow: var(--glow); }
+
+    /* ── Map ── */
+    .map-container { flex: 1; position: relative; overflow: hidden; }
+    #foliumMap { width: 100%; height: 100%; }
+    #foliumMap iframe { width: 100%; height: 100%; border: none; }
+
+    /* Scrollbar */
+    .sidebar::-webkit-scrollbar { width: 5px; }
+    .sidebar::-webkit-scrollbar-track { background: transparent; }
+    .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    @media (max-width: 768px) {
+      .main { flex-direction: column; }
+      .sidebar { width: 100%; height: auto; max-height: 40vh; border-right: none; border-bottom: 1px solid var(--border); }
+      .route-path { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-left">
+    <a href="/" class="back-btn">← BACK</a>
+    <div class="logo-small">Safe<span>Route</span> Chicago</div>
+    {% if not error %}
+    <div class="route-path">
+      <strong>{{ source }}</strong> → <strong>{{ destination }}</strong>
+    </div>
+    {% endif %}
+  </div>
+  <div>
+    <div class="time-pill">
+      🕐 {{ "%02d"|format(hour) }}:00 · Day {{ day }} · Month {{ month }}
+    </div>
+  </div>
+</div>
+
+{% if error %}
+<div class="error-panel">
+  <div class="error-icon">⚠️</div>
+  <div class="error-title">ROUTE ERROR</div>
+  <div class="error-msg">{{ error }}</div>
+  <a href="/" class="error-btn">← TRY AGAIN</a>
+</div>
+
+{% else %}
+<div class="main">
+  <aside class="sidebar">
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">ROUTE ANALYSIS</div>
+      {% for r in route_info %}
+      <div class="route-card {% if r.safest %}best{% endif %}">
+        <div class="route-card-header">
+          <div class="route-card-title">
+            {% if r.safest %}✅{% else %}🔵{% endif %} Route {{ r.index }}
+          </div>
+          <span class="badge {% if r.safest %}badge-safe{% else %}badge-alt{% endif %}">
+            {% if r.safest %}SAFEST{% else %}ALT {{ loop.index }}{% endif %}
+          </span>
+        </div>
+        <div class="route-meta">
+          <div class="meta-item">
+            <div class="meta-label">RISK SCORE</div>
+            <div class="meta-value
+              {% set rnum = r.risk | replace('%','') | float %}
+              {% if rnum < 35 %}risk-safe{% elif rnum < 60 %}risk-med{% else %}risk-high{% endif %}">
+              {{ r.risk }}
+            </div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">LENGTH</div>
+            <div class="meta-value">{{ r.length }}</div>
+          </div>
+        </div>
+        <div class="risk-bar-wrap">
+          {% set rnum = r.risk | replace('%','') | float %}
+          <div class="risk-bar-bg">
+            <div class="risk-bar-fill" style="
+              width: {{ rnum }}%;
+              background: {% if rnum < 35 %}#00e676{% elif rnum < 60 %}#ffab00{% else %}#ff3d00{% endif %};
+            "></div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">TIME CONTEXT</div>
+      <div class="info-row">
+        <span class="info-key">HOUR</span>
+        <span class="info-val">{{ "%02d"|format(hour) }}:00</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">DAY</span>
+        <span class="info-val">
+          {% set days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] %}
+          {{ days[day-1] if day >= 1 and day <= 7 else day }}
+        </span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">MONTH</span>
+        <span class="info-val">
+          {% set months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"] %}
+          {{ months[month-1] if month >= 1 and month <= 12 else month }}
+        </span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">CITY</span>
+        <span class="info-val">Chicago, IL</span>
+      </div>
+      <div class="info-row">
+        <span class="info-key">MODEL</span>
+        <span class="info-val">RandomForest</span>
+      </div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-title">MAP LEGEND</div>
+      <div class="legend-item">
+        <div class="legend-line" style="background:#00e676;box-shadow:0 0 8px rgba(0,230,118,0.5)"></div>
+        <span class="legend-text">Safest Route</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-line" style="background:#546E7A;opacity:0.6"></div>
+        <span class="legend-text">Alternative Routes</span>
+      </div>
+      <div class="legend-item">
+        <div style="width:14px;height:14px;background:#00c853;border-radius:50%;border:2px solid #fff"></div>
+        <span class="legend-text">Start Point</span>
+      </div>
+      <div class="legend-item">
+        <div style="width:14px;height:14px;background:#d50000;border-radius:50%;border:2px solid #fff"></div>
+        <span class="legend-text">Destination</span>
+      </div>
+      <div style="margin-top:14px">
+        <div class="meta-label" style="margin-bottom:6px">CRIME HEATMAP INTENSITY</div>
+        <div class="heatmap-gradient"></div>
+        <div class="heatmap-labels">
+          <span class="heatmap-label">LOW</span>
+          <span class="heatmap-label">MED</span>
+          <span class="heatmap-label">HIGH</span>
+          <span class="heatmap-label">CRITICAL</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section" style="font-size:10px;color:var(--muted);line-height:1.6">
+      ⚠️ This is a <strong style="color:#546e7a">demo system</strong>. Risk scores are based on Chicago synthetic crime data. Do not use for real safety decisions.
+    </div>
+
+  </aside>
+
+  <div class="map-container">
+    <div id="foliumMap">{{ map_html | safe }}</div>
+  </div>
+</div>
+{% endif %}
+
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    const container = document.getElementById('foliumMap');
+    if (!container) return;
+    const iframe = container.querySelector('iframe');
+    if (iframe) {
+      iframe.style.width  = '100%';
+      iframe.style.height = '100%';
+      iframe.style.border = 'none';
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1170 @@
+================================================================================
+   SafeRoute AI — Chicago Crime-Aware Safe Route Navigation System
+   FULL CODE EXPLANATION
+================================================================================
+
+This document explains every single file, function, concept, and decision
+in the project. Read top to bottom for a complete understanding.
+
+
+================================================================================
+  TABLE OF CONTENTS
+================================================================================
+
+  1.  What This Project Does (Big Picture)
+  2.  Project File Structure
+  3.  Tech Stack — What Each Library Does
+  4.  train_model.py — Full Explanation
+  5.  main.py — Full Explanation
+  6.  templates/index.html — Full Explanation
+  7.  templates/map.html — Full Explanation
+  8.  crime_model.pkl — What It Is
+  9.  crime_data.pkl — What It Is
+  10. How Data Flows (Request Lifecycle)
+  11. Machine Learning — Deep Dive
+  12. Routing — How ORS Works
+  13. Geocoding — How It Works
+  14. Risk Scoring — The Core Algorithm
+  15. Map Rendering — How Folium Works
+  16. Error Handling Strategy
+  17. Key Constants and Why They Exist
+  18. Limitations and How to Improve
+
+
+================================================================================
+  1. WHAT THIS PROJECT DOES (BIG PICTURE)
+================================================================================
+
+A user types two Chicago neighborhood names (e.g. "Pilsen" and "Ashburn").
+The system:
+
+  Step 1 — Converts those names into GPS coordinates (lat, lon)
+           using Nominatim (free OpenStreetMap geocoding API)
+
+  Step 2 — Calls OpenRouteService (ORS) API to get 3 different
+           real road-driving routes between those coordinates
+
+  Step 3 — For each route, samples 30 points along the road
+
+  Step 4 — Sends each sample point through a trained Machine Learning
+           model (RandomForest) which predicts a crime risk score (0–1)
+           based on: latitude, longitude, current hour, day, month
+
+  Step 5 — Averages the risk scores across all 30 points per route
+           → this gives a single risk number per route
+
+  Step 6 — Picks the route with the LOWEST risk score
+
+  Step 7 — Renders a Folium (Leaflet.js) interactive map showing:
+           • Crime heatmap in the background
+           • All 3 routes drawn (faded alternatives, bright green safest)
+           • Green marker at start, red marker at destination
+           • A legend showing each route's risk and length
+
+  Step 8 — Returns that map as an HTML page to the browser
+
+
+================================================================================
+  2. PROJECT FILE STRUCTURE
+================================================================================
+
+  edilprojectclaude/
+  │
+  ├── main.py              ← FastAPI web server (the brain of the app)
+  ├── train_model.py       ← One-time script to train the ML model
+  ├── crime_model.pkl      ← The trained ML model (binary file, auto-generated)
+  ├── crime_data.pkl       ← Crime heatmap data points (binary, auto-generated)
+  ├── requirements.txt     ← All Python libraries needed
+  │
+  ├── templates/
+  │   ├── index.html       ← The home page (input form)
+  │   └── map.html         ← The results page (map + sidebar)
+  │
+  ├── static/              ← Folder for CSS/JS files (currently empty, reserved)
+  │
+  ├── CODE_EXPLANATION.txt ← This file
+  └── README.md            ← Setup and run instructions
+
+
+================================================================================
+  3. TECH STACK — WHAT EACH LIBRARY DOES
+================================================================================
+
+  FASTAPI
+  -------
+  A modern Python web framework. It handles HTTP requests (GET, POST) and
+  sends back HTTP responses. It is built on top of Starlette and uses Python
+  async/await for high performance. We use it to define two routes:
+    GET  /       → show the home page
+    POST /route  → process the form and return the map page
+
+  UVICORN
+  -------
+  An ASGI server (Asynchronous Server Gateway Interface). FastAPI cannot
+  run by itself — it needs a server. Uvicorn is that server. When you run
+  "uvicorn main:app --reload", Uvicorn starts the server, loads main.py,
+  and listens on port 8000 for browser requests.
+
+  JINJA2
+  ------
+  A templating engine. HTML files in the templates/ folder contain special
+  tags like {{ variable }} and {% for item in list %}. Jinja2 fills those
+  tags with real Python data before sending the HTML to the browser. This
+  is how the route risk scores appear dynamically on the results page.
+
+  FOLIUM
+  ------
+  A Python library that creates Leaflet.js interactive maps. You write
+  Python code and it generates a complete HTML+JavaScript map. We use it
+  for the dark CartoDB basemap, drawing route lines (PolyLine), placing
+  markers, and adding the crime heatmap layer.
+
+  FOLIUM HEATMAP (folium.plugins.HeatMap)
+  ----------------------------------------
+  A Folium plugin that takes a list of [lat, lon, intensity] points and
+  renders a colour-graded heatmap layer. Red/orange = high crime density,
+  dark blue = low density.
+
+  HTTPX
+  -----
+  An async HTTP client for Python. Used to make API calls to:
+    • Nominatim (geocoding) — converts "Pilsen" to (41.85, -87.66)
+    • OpenRouteService (routing) — returns 3 road route geometries
+  We use async because FastAPI is asynchronous — blocking HTTP calls
+  would freeze the server for all users.
+
+  SCIKIT-LEARN (sklearn)
+  ----------------------
+  The main Python machine learning library. We use:
+    • RandomForestRegressor — the model that predicts risk scores
+    • train_test_split      — splits data into training and test sets
+    • mean_absolute_error   — measures average prediction error
+    • r2_score              — measures how well the model fits (0-1)
+
+  NUMPY
+  -----
+  Numerical computing library. Used for:
+    • np.array()       — creating feature arrays for predictions
+    • np.linspace()    — evenly spacing sample points along a route
+    • np.argmin()      — finding which route has the lowest risk
+    • np.mean()        — averaging risk scores across sample points
+
+  PANDAS
+  ------
+  Data manipulation library. Used in train_model.py to create and
+  work with the crime dataset as a DataFrame (table).
+
+  JOBLIB
+  ------
+  Serialisation library. Used to save and load the trained ML model:
+    joblib.dump(model, "crime_model.pkl")  → saves model to disk
+    joblib.load("crime_model.pkl")         → loads model from disk
+  Much better than pickle for large numpy arrays inside sklearn models.
+
+  POLYLINE
+  --------
+  Decodes Google-style encoded polyline strings into coordinate lists.
+  ORS returns GeoJSON so this library is imported but the GeoJSON path
+  is used directly instead.
+
+  PYTHON-MULTIPART
+  ----------------
+  Required by FastAPI to parse HTML form data (the POST request when
+  the user submits source and destination).
+
+  PATHLIB (Path)
+  --------------
+  Built-in Python library. Used to build file paths that work on both
+  Windows and Linux/Mac:
+    BASE_DIR = Path(__file__).parent
+  This gets the folder where main.py lives, regardless of OS.
+
+  MATH
+  ----
+  Built-in Python library. Used for the Haversine distance formula
+  (calculating real-world km distance between two GPS coordinates).
+
+  DATETIME
+  --------
+  Built-in Python library. Used to get the current hour, day, and month
+  at the moment the user submits a route request. These time values are
+  fed into the ML model to make risk predictions time-aware.
+
+
+================================================================================
+  4. TRAIN_MODEL.PY — FULL EXPLANATION
+================================================================================
+
+  PURPOSE:
+  This is a one-time setup script. You run it ONCE before starting the
+  web server. It creates crime_model.pkl and crime_data.pkl.
+
+  ── SECTION 1: generate_synthetic_crime_data(n=10000) ──────────────────────
+
+  Since we don't have the real Kaggle dataset embedded in the code, this
+  function creates 10,000 fake but realistic crime data points for Chicago.
+
+  HOW IT WORKS:
+
+  a) Chicago Bounding Box
+     lat_min=41.644, lat_max=42.023
+     lon_min=-87.940, lon_max=-87.524
+     These are the real GPS boundaries of Chicago city limits.
+
+  b) Cluster Centers
+     8 real Chicago neighborhoods are defined with their real GPS coords
+     and a "base_risk" value (0-1):
+       Englewood       (41.748, -87.700)  base_risk = 0.85  ← very high
+       Grand Crossing  (41.776, -87.660)  base_risk = 0.80
+       Austin          (41.856, -87.758)  base_risk = 0.78
+       Woodlawn        (41.796, -87.625)  base_risk = 0.72
+       North Lawndale  (41.840, -87.706)  base_risk = 0.75
+       Near West Side  (41.893, -87.634)  base_risk = 0.55
+       Humboldt Park   (41.950, -87.655)  base_risk = 0.45
+       Loop fringe     (41.870, -87.627)  base_risk = 0.40  ← lower
+
+  c) For each cluster, ~1,111 points are generated:
+     • lat/lon: random normal distribution around cluster center (std=0.018°
+       which is about 1.5 km) — this creates a realistic crime "cloud"
+     • hour: random 0-23
+     • day: random 1-7 (Mon-Sun)
+     • month: random 1-12
+     • risk: base_risk + time_factor + weekend_factor + noise
+       - time_factor = +0.15 if hour is 9PM-4AM (night is more dangerous)
+       - weekend_factor = +0.05 if Saturday or Sunday
+       - noise = random.normal(0, 0.06) for natural variance
+       - .clip(0, 1) ensures risk stays in valid range
+
+  d) Remaining points (~1,112) are random background noise across all of
+     Chicago with low risk (0.05–0.35), representing safer areas.
+
+  e) Returns a pandas DataFrame with columns:
+     Latitude, Longitude, hour, day, month, risk_score
+
+  ── SECTION 2: train(df) ───────────────────────────────────────────────────
+
+  a) Features (X): Latitude, Longitude, hour, day, month
+     These are the 5 input variables the model will learn from.
+
+  b) Target (y): risk_score
+     This is what the model tries to predict.
+
+  c) train_test_split: 80% training data, 20% test data
+     The model never sees the test data during training — it's used only
+     to evaluate how well the model generalises to new data.
+
+  d) RandomForestRegressor parameters:
+     • n_estimators=120   → 120 decision trees in the forest
+     • max_depth=10       → each tree can be at most 10 levels deep
+       (prevents overfitting — memorising training data)
+     • min_samples_leaf=4 → each leaf node needs at least 4 samples
+       (another overfitting prevention measure)
+     • n_jobs=-1          → use all CPU cores for parallel training
+     • random_state=42    → fixed seed so results are reproducible
+
+  e) Metrics printed after training:
+     • MAE (Mean Absolute Error): average difference between predicted
+       and actual risk scores. Our model gets ~0.08 meaning predictions
+       are off by about 8% on average — very good for this task.
+     • R² Score: 0.667 means the model explains 66.7% of the variance
+       in risk scores. A score of 1.0 would be perfect prediction.
+
+  ── SECTION 3: main block ──────────────────────────────────────────────────
+
+  a) Calls generate_synthetic_crime_data(10000) to create the dataset
+  b) Calls train(df) to fit the RandomForest model
+  c) Saves model: joblib.dump(model, "crime_model.pkl")
+  d) Takes a random sample of 3,000 points from the dataset (with their
+     lat, lon, risk_score) and saves as crime_data.pkl for the heatmap
+  e) Runs 3 sanity predictions to verify the model makes sense:
+     - Englewood at 10PM Saturday → should be HIGH risk (~0.98) ✓
+     - Loop area at 2PM Tuesday   → should be MEDIUM risk (~0.48) ✓
+     - Humboldt at 10AM Wednesday → should be LOWER risk (~0.45) ✓
+
+
+================================================================================
+  5. MAIN.PY — FULL EXPLANATION
+================================================================================
+
+  ── IMPORTS ────────────────────────────────────────────────────────────────
+
+  from __future__ import annotations
+    → Allows using list[tuple] type hints in Python 3.8 without quotes.
+
+  from pathlib import Path
+    → Cross-platform file path handling.
+
+  from typing import Optional
+    → Used for Optional[tuple[float, float]] return type in _geocode().
+
+  ── CONSTANTS ──────────────────────────────────────────────────────────────
+
+  ORS_API_KEY
+    The OpenRouteService API key. This is a JWT token that authenticates
+    our requests to the ORS routing server. Free tier allows 2,000
+    requests/day and up to 3 alternative routes per request.
+
+  ORS_BASE = "https://api.openrouteservice.org"
+    Base URL for all ORS API calls.
+
+  NOMINATIM = "https://nominatim.openstreetmap.org/search"
+    URL for the free OpenStreetMap geocoding API. No key required but
+    has a rate limit of 1 request/second.
+
+  BASE_DIR = Path(__file__).parent
+    Gets the directory where main.py lives. All other file paths are
+    built relative to this. This ensures the app finds its files
+    whether you run it from C:\projects\ or D:\mycode\.
+
+  MODEL_PATH = BASE_DIR / "crime_model.pkl"
+  DATA_PATH  = BASE_DIR / "crime_data.pkl"
+    Full paths to the model and heatmap data files.
+
+  MAX_ROUTE_KM = 80
+    If the straight-line distance between start and end is more than
+    80 km, we reject the request. This prevents:
+    • Very long API calls that time out
+    • Routes that leave Chicago entirely
+    • Hitting ORS free-tier limits
+
+  SAMPLE_PTS = 30
+    Number of evenly-spaced points sampled from each route for risk
+    prediction. More points = more accurate but slower. 30 is a good
+    balance — enough to cover the whole route without being slow.
+
+  ── APP SETUP ──────────────────────────────────────────────────────────────
+
+  app = FastAPI(title="SafeRoute AI")
+    Creates the FastAPI application instance.
+
+  app.mount("/static", StaticFiles(...), name="static")
+    Makes the static/ folder accessible at /static URL.
+    e.g. if you put style.css in static/, it's at http://localhost:8000/static/style.css
+
+  templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+    Tells FastAPI where to find HTML templates.
+    IMPORTANT: Uses BASE_DIR so the path works on any machine regardless
+    of where uvicorn is run from. This was the fix for the Windows
+    TemplateNotFound error.
+
+  ── STARTUP: _load_assets() ────────────────────────────────────────────────
+
+  Called once when the server starts. Loads both .pkl files into memory:
+    _model      → the RandomForest model (kept in RAM for fast predictions)
+    _crime_data → list of [lat, lon, risk] points for the heatmap
+
+  Loading once at startup is MUCH faster than loading from disk on every
+  request. The model is ~8MB so this matters for performance.
+
+  If files don't exist, it prints a warning but doesn't crash. The app
+  still works, just without a model (uses 0.5 fallback risk) or heatmap.
+
+  ── HELPER: _haversine_km(lat1, lon1, lat2, lon2) ─────────────────────────
+
+  Calculates the real-world distance in kilometres between two GPS points
+  using the Haversine formula. This accounts for Earth's curvature.
+
+  Formula breakdown:
+    R = 6371 km (Earth's radius)
+    dlat = difference in latitudes (radians)
+    dlon = difference in longitudes (radians)
+    a = haversine formula intermediate value
+    distance = 2 * R * arcsin(sqrt(a))
+
+  Used for:
+    1. The MAX_ROUTE_KM distance check before calling the API
+    2. Calculating the length of each route for display
+
+  ── HELPER: _route_length_km(coords) ──────────────────────────────────────
+
+  Takes a list of (lat, lon) tuples (the full route) and sums up the
+  Haversine distances between each consecutive pair of points.
+  Returns total route length in km.
+
+  ── HELPER: _sample_route(coords, n=30) ───────────────────────────────────
+
+  A route from ORS might have 500+ coordinate points. Predicting risk for
+  all 500 would be slow. This function picks n=30 evenly-spaced points
+  using np.linspace() to create evenly-distributed indices.
+
+  Example: route has 100 points, n=5 → returns points at indices
+  [0, 25, 50, 75, 99] — start, quarter, middle, 3/4, end.
+
+  ── HELPER: _predict_risk(lat, lon, hour, day, month) ─────────────────────
+
+  Wraps the ML model prediction for a single point:
+    features = np.array([[lat, lon, hour, day, month]])
+    risk = _model.predict(features)[0]
+    return max(0.0, min(1.0, risk))  ← clips to [0,1] range
+
+  If model is not loaded (_model is None), returns 0.5 as neutral fallback.
+
+  ── HELPER: _route_risk_score(coords, hour, day, month) ───────────────────
+
+  The core risk calculation for an entire route:
+    1. Sample 30 points from the route
+    2. Predict risk for each point using the current time context
+    3. Return the MEAN (average) risk across all 30 points
+
+  This gives a single number (0-1) representing how dangerous the
+  whole route is right now at this time of day/week/month.
+
+  ── GEOCODING: _geocode(place) ────────────────────────────────────────────
+
+  Async function that converts a place name to (lat, lon).
+
+  First attempt: appends ", Chicago, IL" to the query to bias results
+  toward Chicago. e.g. "Pilsen" becomes "Pilsen, Chicago, IL"
+
+  If that returns nothing: retries with just the raw place name.
+  This handles cases where the user already typed "Chicago" or types
+  a full address.
+
+  Nominatim API returns a JSON array. We take the first result's
+  lat and lon (converted to float).
+
+  Returns None if no result found — the caller handles this gracefully.
+
+  ── ROUTING: _fetch_routes(src, dst) ──────────────────────────────────────
+
+  Calls ORS v2 directions API with GeoJSON output format.
+
+  Key points:
+    • ORS uses [longitude, latitude] order (opposite to most libraries!)
+      so we flip: [src[1], src[0]] — lon first, lat second
+    • alternative_routes.target_count = 3: ask for up to 3 routes
+    • weight_factor = 1.6: how much longer an alternative can be
+      vs the optimal route (1.6 = up to 60% longer)
+    • share_factor = 0.6: how different routes must be (0.6 = share
+      at most 60% of their path — forces genuinely different routes)
+    • geometry_simplify = False: keep all GPS points (don't reduce detail)
+    • instructions = False: don't return turn-by-turn directions
+
+  Response parsing:
+    features = resp.json()["features"]  ← list of route objects
+    For each feature, extract geometry.coordinates (list of [lon, lat])
+    Flip back to (lat, lon) tuples: [(c[1], c[0]) for c in coordinates]
+
+  Returns a list of routes, each route being a list of (lat, lon) tuples.
+
+  ── MAP BUILDER: _build_map(...) ──────────────────────────────────────────
+
+  Takes coordinates, routes, risks, and location names. Returns an HTML
+  string containing the complete interactive map.
+
+  Step 1: Create base map
+    folium.Map(
+      location=[mid_lat, mid_lon],  ← center between start and end
+      zoom_start=13,                ← zoom level (13 = neighbourhood)
+      tiles="CartoDB dark_matter",  ← dark themed basemap
+    )
+
+  Step 2: Add crime heatmap
+    HeatMap(heat_data, gradient={...})
+    gradient maps risk values (0-1) to colours:
+      0.2 → dark blue (#1a237e)   low crime
+      0.45 → orange (#e65100)     moderate
+      0.7 → dark red (#b71c1c)    high
+      1.0 → bright red (#ff1744)  critical
+
+  Step 3: Draw routes
+    best_idx = np.argmin(risks)  ← index of safest route
+
+    For each route:
+      • Safest: green (#00E676), weight=6, opacity=1.0, no dash
+      • Others: grey (#546E7A), weight=3, opacity=0.45, dashed "8 6"
+      • Tooltip on hover shows: route name, risk %, length km
+
+    Extra white dashed line on safest route (weight=2, opacity=0.35)
+    creates a subtle animated-flow visual effect.
+
+  Step 4: Add markers
+    Green marker (fa:play icon) at start
+    Red marker (fa:flag-checkered icon) at destination
+
+  Step 5: Add risk legend (raw HTML injected into map)
+    Fixed-position box bottom-left showing all routes with:
+    • Colour-coded label (green=safest, grey=alternative)
+    • Risk bar (width proportional to risk percentage)
+    • Risk percentage value
+
+  Step 6: Auto-fit bounds
+    fmap.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+    Automatically zooms the map to show all routes.
+
+  Returns fmap._repr_html_() which is the full HTML string.
+
+  ── ROUTE HANDLER: GET / ──────────────────────────────────────────────────
+
+  The simplest handler. Just returns index.html with the input form.
+  No data processing needed.
+
+  ── ROUTE HANDLER: GET /health ────────────────────────────────────────────
+
+  Returns a JSON status check:
+  {
+    "status": "ok",
+    "model_loaded": true/false,
+    "crime_points": 3000
+  }
+  Useful for quickly verifying the server is running and the model loaded.
+
+  ── ROUTE HANDLER: POST /route ────────────────────────────────────────────
+
+  The main handler. Called when user submits the form.
+
+  Parameters (from HTML form body):
+    source:      str  ← starting location name
+    destination: str  ← ending location name
+
+  Flow:
+    1. Get current datetime → hour, day, month
+    2. Build error_ctx dict (used if anything fails)
+    3. Geocode source → src_coords or return error
+    4. Geocode destination → dst_coords or return error
+    5. Check straight-line distance < 80km or return error
+    6. Check distance > 0.05km (not same location) or return error
+    7. Fetch routes from ORS or return error
+    8. Check at least one route returned or return error
+    9. Score each route → risks list
+    10. Find best_idx = route with minimum risk
+    11. Build route_info list for sidebar display
+    12. Build map HTML
+    13. Return map.html template with all data
+
+  Every step is wrapped in try/except to prevent server crashes.
+  All errors return the map.html template with error=<message>
+  so the user sees a friendly error page, not a 500 crash.
+
+
+================================================================================
+  6. TEMPLATES/INDEX.HTML — FULL EXPLANATION
+================================================================================
+
+  The landing page / input form. Pure HTML + CSS + minimal JavaScript.
+  No framework. No external JS dependencies.
+
+  ── CSS DESIGN SYSTEM ──────────────────────────────────────────────────────
+
+  CSS variables defined in :root:
+    --bg        #080d13  ← very dark navy (page background)
+    --surface   #0d1620  ← slightly lighter (cards)
+    --surface2  #111c2a  ← input backgrounds
+    --border    #1a3044  ← card borders
+    --accent    #00e676  ← bright green (primary colour, buttons, highlights)
+    --accent2   #00bcd4  ← cyan (secondary accents)
+    --danger    #ff3d00  ← red (errors)
+    --warning   #ffab00  ← amber (medium risk)
+    --muted     #546e7a  ← grey-blue (secondary text)
+
+  ── ANIMATED BACKGROUND ────────────────────────────────────────────────────
+
+  body::before — CSS grid overlay
+    Creates a subtle grid pattern using background-image with two
+    linear-gradients (horizontal and vertical lines) at 3% opacity.
+    pointer-events: none so it doesn't interfere with clicking.
+
+  body::after — Scanline animation
+    A 3px tall green gradient bar that moves from top to bottom of the
+    screen in a 4-second infinite loop. Creates a "scanning" effect.
+    @keyframes scan: top moves from -3px to 100vh
+
+  ── NAVBAR ─────────────────────────────────────────────────────────────────
+
+  position: sticky — stays at top when scrolling
+  backdrop-filter: blur(12px) — frosted glass effect
+  .status-dot — pulsing green dot using CSS box-shadow animation
+
+  ── STATS BAR ──────────────────────────────────────────────────────────────
+
+  4 stats shown horizontally: Routes Analyzed, Crime Data Points, AI, Live
+  These are static/hardcoded display values, not dynamic data.
+
+  ── FORM CARD ──────────────────────────────────────────────────────────────
+
+  .form-card::before — decorative gradient line at top of card
+    Uses linear-gradient from transparent → green → cyan → transparent
+    Creates a rainbow-edge top border effect.
+
+  .form-grid — CSS Grid with two equal columns
+    Places source and destination inputs side by side.
+
+  .time-strip — Shows the current time
+    Uses JavaScript to update every 60 seconds.
+    The hour shown here is the same hour value sent to the ML model.
+
+  .btn-submit::before — Shine animation on hover
+    A transparent-to-white-to-transparent gradient that slides across
+    the button when hovered. Creates a "glint" effect.
+
+  ── JAVASCRIPT ─────────────────────────────────────────────────────────────
+
+  updateClock():
+    Gets current hours and minutes, formats them as HH:MM,
+    sets the text of #liveTime span.
+    Called immediately on load, then every 60 seconds via setInterval.
+
+  handleSubmit(form):
+    When form is submitted, changes button text to "⏳ ANALYZING ROUTES…"
+    and adds .loading class (disables further clicks, changes colour).
+    Gives visual feedback that the request is being processed
+    (route fetching + ML scoring can take 3-8 seconds).
+
+
+================================================================================
+  7. TEMPLATES/MAP.HTML — FULL EXPLANATION
+================================================================================
+
+  The results page. Shown after the user submits the form.
+  Has two states: ERROR state and SUCCESS state (controlled by Jinja2 if/else).
+
+  ── JINJA2 TEMPLATE VARIABLES ──────────────────────────────────────────────
+
+  Variables passed from main.py to this template:
+    request       → required by FastAPI/Jinja2 (always pass this)
+    source        → starting location name (string)
+    destination   → destination name (string)
+    error         → error message string, or None if success
+    map_html      → complete Folium map HTML string (only if success)
+    route_info    → list of route dicts (index, risk, length, safest)
+    hour          → current hour (int, 0-23)
+    day           → current day of week (int, 1-7)
+    month         → current month (int, 1-12)
+
+  ── LAYOUT ─────────────────────────────────────────────────────────────────
+
+  body uses flexbox column layout:
+    • .topbar (56px fixed height)
+    • .main (fills remaining height, flex row)
+      ├── .sidebar (300px fixed width, scrollable)
+      └── .map-container (fills remaining width)
+
+  This creates the Google Maps-like layout where sidebar is on left
+  and map fills the right side entirely.
+
+  ── TOPBAR ─────────────────────────────────────────────────────────────────
+
+  Shows: ← BACK button | Logo | "Source → Destination" pill | Time pill
+  backdrop-filter: blur(10px) makes it appear over the map.
+
+  ── SIDEBAR ────────────────────────────────────────────────────────────────
+
+  Section 1: ROUTE ANALYSIS
+    Jinja2 for loop: {% for r in route_info %}
+    Renders one .route-card per route.
+
+    The .best class is applied if r.safest is True:
+      {% if r.safest %}best{% endif %}
+
+    Risk bar width is calculated from the risk string:
+      {% set rnum = r.risk | replace('%','') | float %}
+      Strips the % sign and converts to float.
+      width: {{ rnum }}% → fills bar proportionally
+
+    Colour is conditional:
+      < 35% → green (#00e676)
+      35-60% → amber (#ffab00)
+      > 60% → red (#ff3d00)
+
+  Section 2: TIME CONTEXT
+    Shows hour, day name, month name, city, model type.
+    Day name uses Jinja2 array indexing:
+      {% set days = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"] %}
+      {{ days[day-1] }}
+
+  Section 3: MAP LEGEND
+    Static legend explaining line colours and marker types.
+    Heatmap gradient bar is CSS only (no image needed).
+
+  Section 4: Disclaimer
+    Small text reminding users this is a demo system.
+
+  ── MAP CONTAINER ──────────────────────────────────────────────────────────
+
+  {{ map_html | safe }}
+    The | safe filter tells Jinja2 NOT to escape the HTML.
+    Without it, Jinja2 would convert < to &lt; etc., breaking the map.
+    The map_html string is an entire <iframe> containing the Folium map.
+
+  JavaScript at bottom:
+    Finds the iframe inside #foliumMap and forces it to fill 100%
+    width and height. Folium generates iframes with default sizing
+    that needs to be overridden.
+
+  ── ERROR STATE ────────────────────────────────────────────────────────────
+
+  {% if error %}
+    Shows a centered error panel with:
+    • Large warning emoji
+    • Red "ROUTE ERROR" title
+    • The error message from main.py
+    • "← TRY AGAIN" button linking back to /
+
+
+================================================================================
+  8. CRIME_MODEL.PKL — WHAT IT IS
+================================================================================
+
+  A binary file (joblib serialised Python object) containing the
+  fully trained RandomForestRegressor model.
+
+  SIZE: ~8 MB (120 trees, each with up to 10 levels)
+
+  CONTENTS: Internally it stores all 120 decision trees, each tree
+  storing thousands of "if lat < X and hour > Y then risk = Z" style
+  decision nodes. When you call model.predict([[lat, lon, h, d, m]]),
+  it runs the input through all 120 trees and averages the predictions.
+
+  HOW IT'S USED IN MAIN.PY:
+    _model = joblib.load("crime_model.pkl")
+    risk = _model.predict(np.array([[lat, lon, hour, day, month]]))[0]
+
+  NEVER COMMIT THIS TO GIT with real crime data — it embeds the training
+  data distribution. For this project it's synthetic so it's fine.
+
+
+================================================================================
+  9. CRIME_DATA.PKL — WHAT IT IS
+================================================================================
+
+  A binary file containing a Python list of 3,000 items.
+  Each item is: [latitude, longitude, risk_score]
+
+  Example:
+    [[41.748, -87.700, 0.91],
+     [41.776, -87.660, 0.83],
+     ...]
+
+  These are used ONLY for the heatmap visualisation.
+  The heatmap shows where crime is concentrated geographically,
+  independent of the ML model predictions.
+
+  The 3,000 points are a random sample from the 10,000 training points.
+  More points = smoother heatmap but slower to render.
+
+
+================================================================================
+  10. HOW DATA FLOWS (REQUEST LIFECYCLE)
+================================================================================
+
+  Browser                    FastAPI (main.py)              External APIs
+  ───────────────────────────────────────────────────────────────────────
+
+  1. User visits localhost:8000
+     GET /  →→→  index() handler
+              templates.TemplateResponse("index.html")
+     ←← HTML page with form
+
+  2. User types "Pilsen" and "Ashburn", clicks submit
+     POST /route  →→→  compute_route() handler
+
+  3. Get current time: hour=14, day=2, month=3
+
+  4. Geocode source:
+     httpx GET nominatim → "Pilsen, Chicago, IL"
+     ←← {"lat": "41.854", "lon": "-87.666", ...}
+     src_coords = (41.854, -87.666)
+
+  5. Geocode destination:
+     httpx GET nominatim → "Ashburn, Chicago, IL"
+     ←← {"lat": "41.748", "lon": "-87.727", ...}
+     dst_coords = (41.748, -87.727)
+
+  6. Distance check:
+     haversine(41.854, -87.666, 41.748, -87.727) = 14.2 km ✓ (< 80)
+
+  7. Fetch routes:
+     httpx POST ORS API
+     body: {coordinates: [[-87.666, 41.854], [-87.727, 41.748]],
+            alternative_routes: {target_count: 3}}
+     ←← GeoJSON with 3 route features, each with 200-400 coordinates
+
+  8. Parse routes:
+     route_0: [(41.854,-87.666), (41.851,-87.669), ..., (41.748,-87.727)]
+     route_1: [...different path...]
+     route_2: [...another path...]
+
+  9. Score route_0:
+     sample_pts = 30 evenly spaced points
+     for each point: _model.predict([[lat, lon, 14, 2, 3]])
+     risks = [0.72, 0.68, 0.71, ...] (30 values)
+     route_0_risk = mean(risks) = 0.697
+
+  10. Score route_1: risk = 0.634
+      Score route_2: risk = 0.721
+
+  11. best_idx = argmin([0.697, 0.634, 0.721]) = 1  ← route_1 is safest
+
+  12. Build Folium map:
+      - Dark CartoDB basemap
+      - Heatmap from 3000 crime points
+      - route_0: grey dashed, opacity 0.45
+      - route_1: GREEN solid, opacity 1.0  ← SAFEST
+      - route_2: grey dashed, opacity 0.45
+      - Green marker at (41.854, -87.666)
+      - Red marker at (41.748, -87.727)
+      - Risk legend HTML injected
+      → map_html = "<iframe ...>...</iframe>"  (full HTML string)
+
+  13. Return map.html template filled with:
+      source="Pilsen", destination="Ashburn"
+      route_info=[{index:1, risk:"69.7%", length:"16.2 km", safest:False},
+                  {index:2, risk:"63.4%", length:"18.1 km", safest:True},
+                  {index:3, risk:"72.1%", length:"15.8 km", safest:False}]
+      map_html=<the full folium HTML>
+      hour=14, day=2, month=3
+
+  Browser renders map.html:
+  ←← Full page with sidebar + interactive map
+
+
+================================================================================
+  11. MACHINE LEARNING — DEEP DIVE
+================================================================================
+
+  WHAT IS A RANDOM FOREST?
+
+  A Random Forest is an ensemble of Decision Trees.
+
+  A Decision Tree makes predictions by asking a series of yes/no questions:
+    "Is latitude < 41.800?"
+      YES → "Is hour < 20?"
+              YES → risk = 0.45
+              NO  → risk = 0.72
+      NO  → "Is day >= 6?"
+              ...
+
+  The tree is "grown" during training by finding the questions that best
+  split the data into groups with similar risk scores.
+
+  A Random Forest builds 120 of these trees, each trained on a random
+  subset of the training data with random subsets of features considered
+  at each split. This randomness prevents overfitting.
+
+  For prediction: all 120 trees vote, and the average is returned.
+
+  WHY RANDOM FOREST FOR THIS TASK?
+
+  • Handles non-linear relationships: crime risk isn't linearly related
+    to latitude — it has complex spatial patterns (high in some areas,
+    low in others). Trees capture this naturally.
+  • Robust to outliers: unusual data points don't dominate the model.
+  • No feature scaling needed: we don't need to normalise lat/lon/hour.
+  • Fast inference: predicting for 30 points takes <1ms.
+  • Interpretable: you can see feature importances.
+
+  FEATURE IMPORTANCES (approximate):
+    Latitude  ~35% — where you are (north-south) matters most
+    Longitude ~33% — where you are (east-west)
+    Hour      ~18% — time of day is very important
+    Day        ~8% — day of week (weekends slightly riskier)
+    Month      ~6% — season has some effect
+
+  WHY THESE 5 FEATURES?
+
+  Latitude + Longitude: Crime is spatially concentrated. Certain
+  neighbourhoods have much higher crime rates due to socioeconomic factors.
+  The model learns these geographic patterns.
+
+  Hour: Crime peaks at night (especially robbery, assault). The model
+  learns that 11PM in Englewood is more dangerous than 11AM.
+
+  Day: Weekends have slightly higher crime (more people out, more alcohol
+  consumption). The model learns a modest weekend bump.
+
+  Month: Some seasonality exists (more outdoor crime in summer). The
+  model learns a slight summer risk increase.
+
+
+================================================================================
+  12. ROUTING — HOW ORS WORKS
+================================================================================
+
+  OpenRouteService is a free, open-source routing engine based on
+  OpenStreetMap data. It provides a REST API similar to Google Maps
+  Directions but free to use.
+
+  ENDPOINT USED:
+  POST https://api.openrouteservice.org/v2/directions/driving-car/geojson
+
+  REQUEST BODY:
+  {
+    "coordinates": [
+      [-87.666, 41.854],   ← start: [lon, lat] (ORS uses lon-first!)
+      [-87.727, 41.748]    ← end:   [lon, lat]
+    ],
+    "alternative_routes": {
+      "target_count": 3,       ← want up to 3 routes
+      "weight_factor": 1.6,    ← alternatives can be 60% longer
+      "share_factor": 0.6      ← routes can share max 60% of path
+    },
+    "geometry_simplify": false, ← keep all GPS points
+    "instructions": false       ← skip turn-by-turn (we don't need it)
+  }
+
+  RESPONSE FORMAT (GeoJSON):
+  {
+    "features": [
+      {
+        "geometry": {
+          "type": "LineString",
+          "coordinates": [[-87.666, 41.854], [-87.665, 41.853], ...]
+        },
+        "properties": { "summary": {"distance": 16200, "duration": 1200} }
+      },
+      { ...route 2... },
+      { ...route 3... }
+    ]
+  }
+
+  We parse features and for each one extract coordinates, flipping
+  [lon, lat] back to (lat, lon) tuples since Folium uses lat-first.
+
+  COORDINATE FLIP NOTE:
+  ORS, GeoJSON, and Mapbox all use [longitude, latitude] order.
+  Folium and most Python geo libraries use (latitude, longitude) order.
+  This is a classic gotcha. The code flips in both directions:
+    Sending to ORS: [src[1], src[0]]  (flip to lon-first)
+    Receiving from ORS: (c[1], c[0]) (flip back to lat-first)
+
+
+================================================================================
+  13. GEOCODING — HOW IT WORKS
+================================================================================
+
+  Geocoding = converting a human-readable place name into GPS coordinates.
+
+  We use Nominatim, which is OpenStreetMap's free geocoding service.
+  No API key required but rate-limited to 1 request/second.
+
+  REQUEST:
+  GET https://nominatim.openstreetmap.org/search
+  ?q=Pilsen, Chicago, IL
+  &format=json
+  &limit=1
+
+  RESPONSE:
+  [
+    {
+      "lat": "41.8541",
+      "lon": "-87.6666",
+      "display_name": "Pilsen, Chicago, Cook County, Illinois, USA",
+      "type": "neighbourhood"
+    }
+  ]
+
+  We append ", Chicago, IL" to bias results toward Chicago. Without this,
+  searching "Lincoln Park" might return the park in New York or Denver.
+
+  TWO-ATTEMPT STRATEGY:
+  Attempt 1: "Pilsen, Chicago, IL"     ← most specific
+  If empty: attempt 2: "Pilsen"        ← fallback for full addresses
+                                          or places with "Chicago" already
+
+  Returns None if both attempts return empty — handled as an error.
+
+  User-Agent header is REQUIRED by Nominatim's usage policy:
+  "User-Agent": "SafeRouteAI/1.0 (demo)"
+  Without it, requests are rejected with 403 errors.
+
+
+================================================================================
+  14. RISK SCORING — THE CORE ALGORITHM
+================================================================================
+
+  The risk scoring algorithm is the heart of the project.
+
+  FULL PIPELINE:
+
+  compute_route() gets current time: hour=22, day=6, month=7
+
+  For route_0 with 350 GPS points:
+
+    Step 1: _sample_route(coords, n=30)
+      indices = np.linspace(0, 349, 30, dtype=int)
+      = [0, 12, 24, 36, ..., 337, 349]
+      Returns 30 evenly-spaced (lat, lon) tuples
+
+    Step 2: for each of the 30 points:
+      _predict_risk(lat, lon, hour=22, day=6, month=7)
+      → features = [[lat, lon, 22, 6, 7]]
+      → _model.predict(features)[0]
+      → e.g., 0.847
+
+    Step 3: risks = [0.847, 0.891, 0.823, 0.756, ...]  (30 values)
+
+    Step 4: return np.mean(risks) = 0.831
+
+  route_0_risk = 0.831 (83.1% — very risky, Saturday night route)
+
+  WHY MEAN AND NOT MAX?
+  Using the maximum risk point would overpenalise routes that pass
+  briefly through one risky block. The mean better represents the
+  overall safety of the entire journey.
+
+  WHY 30 SAMPLE POINTS?
+  • Too few (5-10): misses risky stretches, inaccurate
+  • Too many (100+): slow, and adds minimal accuracy
+  • 30 points: covers a route every ~500m for a 15km journey, which
+    is granular enough to catch neighbourhood-level risk changes
+
+
+================================================================================
+  15. MAP RENDERING — HOW FOLIUM WORKS
+================================================================================
+
+  Folium is a Python wrapper around Leaflet.js.
+
+  When you call folium.Map(), it creates a Python object.
+  When you call fmap._repr_html_(), it serialises the object into a
+  complete HTML document containing:
+    • <link> tags to Leaflet CSS from CDN
+    • <script> tags to Leaflet JS from CDN
+    • JavaScript that creates a Leaflet map with all your layers
+    • An <iframe> wrapper
+
+  THE DARK BASEMAP:
+  tiles="CartoDB dark_matter" loads a dark-themed map tile set from
+  CartoDB's free CDN. No API key required. Looks very similar to the
+  dark mode in Google Maps.
+
+  HEATMAP RENDERING:
+  folium.plugins.HeatMap uses the Leaflet.heat plugin.
+  It takes [lat, lon, intensity] points and renders a smooth colour
+  gradient showing density. The gradient dict maps 0-1 intensity
+  values to hex colours.
+
+  POLYLINE RENDERING:
+  folium.PolyLine draws a line through a list of coordinates.
+  dash_array="8 6" means: 8px dash, 6px gap, repeating.
+  This creates the dashed appearance for alternative routes.
+
+  MARKERS:
+  folium.Icon(color="green", icon="play", prefix="fa")
+  Uses Font Awesome icons (prefix="fa"). The icon names come from
+  FontAwesome 4 (e.g. "play", "flag-checkered", "home").
+
+  CUSTOM HTML LEGEND:
+  fmap.get_root().html.add_child(folium.Element(html_string))
+  This injects raw HTML directly into the map's <body> before the
+  Leaflet map container. We use position:fixed CSS to pin the legend
+  to the bottom-left corner.
+
+  FIT BOUNDS:
+  fmap.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
+  Tells Leaflet to automatically zoom/pan so all routes are visible.
+  This replaces the manual zoom_start=13 and means the map always
+  shows the full route regardless of distance.
+
+
+================================================================================
+  16. ERROR HANDLING STRATEGY
+================================================================================
+
+  Every external call is wrapped in try/except:
+
+  GEOCODING ERRORS:
+    • If Nominatim returns empty: return friendly "Could not locate X" message
+    • If request times out: caught by Exception, returns timeout message
+    • Invalid location name: same as empty response
+
+  DISTANCE ERRORS:
+    • > 80km: "Distance exceeds limit" message
+    • < 0.05km: "Start and destination are the same" message
+
+  ROUTING ERRORS:
+    • ORS API error (non-200 status): raises ValueError with status code
+    • Network timeout: caught by Exception
+    • Empty routes list: "No routes found" message
+
+  MAP ERRORS:
+    • Folium rendering error: caught, traceback printed to console
+    • Returns "Map rendering error" to user
+
+  ALL ERRORS use the same error_ctx pattern:
+    return templates.TemplateResponse("map.html", error_ctx)
+  This shows map.html in error state (the big ⚠️ panel)
+  instead of crashing with a 500 Internal Server Error.
+
+  The user ALWAYS gets a readable page — never a blank error screen.
+
+
+================================================================================
+  17. KEY CONSTANTS AND WHY THEY EXIST
+================================================================================
+
+  MAX_ROUTE_KM = 80
+    • ORS free tier: max 150km per request
+    • Routes >80km are very unlikely to be within Chicago
+    • Prevents accidental inter-city route requests
+
+  SAMPLE_PTS = 30
+    • Performance/accuracy tradeoff (explained in section 14)
+    • Adjustable: increase to 50 for more accuracy, decrease to 15 for speed
+
+  weight_factor = 1.6  (in _fetch_routes)
+    • Allows alternative routes up to 60% longer than optimal
+    • Lower = alternatives too similar to optimal
+    • Higher = alternatives may be unreasonably long
+
+  share_factor = 0.6  (in _fetch_routes)
+    • Alternatives share at most 60% of their path
+    • Lower = more different routes but may not exist
+    • 0.6 is ORS's recommended default
+
+  n_estimators = 120  (in train_model.py)
+    • More trees = better accuracy but slower training and larger file
+    • 120 trees trains in ~5 seconds and gives good accuracy
+
+  max_depth = 10  (in train_model.py)
+    • Prevents overfitting (memorising training data)
+    • With 5 features and 10000 samples, depth 10 is appropriate
+
+
+================================================================================
+  18. LIMITATIONS AND HOW TO IMPROVE
+================================================================================
+
+  CURRENT LIMITATIONS:
+
+  1. Synthetic training data
+     The model is trained on computer-generated crime data that approximates
+     Chicago crime patterns. For real accuracy, use the Kaggle Chicago
+     Crime Dataset (2001-present, 7M+ records).
+
+  2. No real-time crime data
+     Crime patterns change. A fresh robbery 10 minutes ago won't affect
+     risk scores. Real-time data would require a live crime feed API.
+
+  3. Driving mode only
+     ORS supports cycling, walking, and other profiles. Currently hardcoded
+     to "driving-car". Easy to make configurable.
+
+  4. Chicago-only geocoding
+     The ", Chicago, IL" suffix biases all geocoding to Chicago. To support
+     other cities, this would need to be dynamic.
+
+  5. No user accounts or route history
+     Routes are not saved. Adding a database (SQLite) would allow users
+     to save and compare routes over time.
+
+  6. Risk = mean across route points
+     The algorithm averages risk. A route that goes through one very
+     dangerous block would have its risk "averaged out". A weighted
+     max-aware formula might be more realistic.
+
+  HOW TO IMPROVE:
+
+  • Replace synthetic data with real Kaggle dataset (just modify
+    generate_synthetic_crime_data() to read a CSV instead)
+  • Add walking/cycling/transit routing options
+  • Add time-of-day selector so users can plan future journeys
+  • Add address autocomplete using Nominatim's autocomplete endpoint
+  • Cache geocoding results in a dict to avoid repeated API calls
+  • Add route comparison table with estimated travel time
+  • Deploy to cloud (Railway, Render, Fly.io) for public access
+
+
+================================================================================
+  END OF CODE EXPLANATION
+================================================================================
